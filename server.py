@@ -17,11 +17,11 @@ except Exception:
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
 # Configuration (environment variables)
-DB_DSN = os.getenv("DB_DSN", "postgresql://postgres:password@127.0.0.1:5432/iotdb")
-TCP_HOST = os.getenv("TCP_HOST", "0.0.0.0")
+DB_DSN = os.getenv("DB_DSN", "postgresql://postgres:lpc2005@192.168.1.110:5432/postgres")
+TCP_HOST = os.getenv("TCP_HOST", "localhost")
 TCP_PORT = int(os.getenv("TCP_PORT", "9000"))
-RABBITMQ_ENABLED = os.getenv("RABBITMQ_ENABLED", "false").lower() in ("1", "true", "yes")
-RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://guest:guest@127.0.0.1:5672/")
+RABBITMQ_ENABLED = os.getenv("RABBITMQ_ENABLED", "true").lower() in ("1", "true", "yes")
+RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://admin:lpc2005@192.168.1.110:5672/test")
 RABBITMQ_EXCHANGE = os.getenv("RABBITMQ_EXCHANGE", "iot_exchange")
 RABBITMQ_ROUTING_KEY = os.getenv("RABBITMQ_ROUTING_KEY", "iot.data")
 
