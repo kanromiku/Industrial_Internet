@@ -1,12 +1,13 @@
 # Async TCP server that receives JSON lines, stores into PostgreSQL, and optionally publishes to RabbitMQ.
-# Configuration via environment variables.
+# Configuration via config.ini file.
 
-import os
 import asyncio
 import json
 import logging
+import configparser
 from datetime import datetime, timezone
-from typing import Optional, Tuple, Dict, Any
+from typing import Optional, Dict, Any
+import colorlog
 
 import asyncpg
 try:
@@ -14,16 +15,54 @@ try:
 except Exception:
     aio_pika = None
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+# -- Logging Setup --
+def get_logger(level=logging.INFO):
+    # 创建logger对象
+    logger = logging.getLogger()
+    logger.setLevel(level)
+    # 创建控制台日志处理器
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(level)
+    # 定义颜色输出格式
+    color_formatter = colorlog.ColoredFormatter(
+        '%(log_color)s%(levelname)s: %(message)s',
+        log_colors={
+            'DEBUG': 'cyan',
+            'INFO': 'green',
+            'WARNING': 'yellow',
+            'ERROR': 'red',
+            'CRITICAL': 'red,bg_white',
+        }
+    )
+    # 将颜色输出格式添加到控制台日志处理器
+    console_handler.setFormatter(color_formatter)
+    # 移除默认的handler
+    for handler in logger.handlers:
+        logger.removeHandler(handler)
+    # 将控制台日志处理器添加到logger对象
+    logger.addHandler(console_handler)
+    return logger
 
-# Configuration (environment variables)
-DB_DSN = os.getenv("DB_DSN", "postgresql://postgres:lpc2005@192.168.1.110:5432/postgres")
-TCP_HOST = os.getenv("TCP_HOST", "localhost")
-TCP_PORT = int(os.getenv("TCP_PORT", "9000"))
-RABBITMQ_ENABLED = os.getenv("RABBITMQ_ENABLED", "true").lower() in ("1", "true", "yes")
-RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://admin:lpc2005@192.168.1.110:5672/test")
-RABBITMQ_EXCHANGE = os.getenv("RABBITMQ_EXCHANGE", "iot_exchange")
-RABBITMQ_ROUTING_KEY = os.getenv("RABBITMQ_ROUTING_KEY", "iot.data")
+
+logger = get_logger()
+# logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+# --- Configuration ---
+config = configparser.ConfigParser()
+config.read('config.ini')
+
+# Database configuration
+DB_DSN = config.get('database', 'dsn', fallback='postgresql://postgres:postgres@localhost:5432/postgres')
+
+# TCP Server configuration
+TCP_HOST = config.get('server', 'host', fallback='localhost')
+TCP_PORT = config.getint('server', 'port', fallback=9000)
+
+# RabbitMQ configuration
+RABBITMQ_ENABLED = config.getboolean('rabbitmq', 'enabled', fallback=True)
+RABBITMQ_URL = config.get('rabbitmq', 'url', fallback='amqp://admin:admin@loaclhost:5672/')
+RABBITMQ_EXCHANGE = config.get('rabbitmq', 'exchange', fallback='iot_exchange')
+RABBITMQ_ROUTING_KEY = config.get('rabbitmq', 'routing_key', fallback='iot.data')
 
 # SQL for inserting data
 INSERT_SQL = """
@@ -57,7 +96,7 @@ def _parse_iso8601_to_datetime(value: str) -> Optional[datetime]:
         return None
 
 
-def parse_message_line(line: bytes or str) -> Tuple[Optional[str], datetime, str]:
+def parse_message_line(line: bytes or str) -> tuple[Optional[str], datetime, str]:
     """Parse a single line (bytes or str). Expect a JSON object per line.
 
     Returns (device_id, ts(datetime UTC), payload_json_str).
@@ -107,21 +146,21 @@ class TcpToDbServer:
 
     async def init_db(self):
         self.db_pool = await asyncpg.create_pool(dsn=DB_DSN, min_size=1, max_size=10)
-        logging.info("Connected to PostgreSQL: %s", DB_DSN)
+        logger.info("Connected to PostgreSQL: %s", DB_DSN)
 
     async def init_rabbit(self):
         if not RABBITMQ_ENABLED:
-            logging.info("RabbitMQ disabled by config")
+            logger.info("RabbitMQ disabled by config")
             return
         if aio_pika is None:
-            logging.warning("aio_pika not installed; RabbitMQ disabled")
+            logger.warning("aio_pika not installed; RabbitMQ disabled")
             return
         self.rabbit_conn = await aio_pika.connect_robust(RABBITMQ_URL)
         self.rabbit_channel = await self.rabbit_conn.channel()
         self.rabbit_exchange = await self.rabbit_channel.declare_exchange(
             RABBITMQ_EXCHANGE, aio_pika.ExchangeType.TOPIC, durable=True
         )
-        logging.info("Connected to RabbitMQ: %s", RABBITMQ_URL)
+        logger.info("Connected to RabbitMQ: %s", RABBITMQ_URL)
 
     async def close(self):
         if self.rabbit_conn:
@@ -131,7 +170,7 @@ class TcpToDbServer:
 
     async def handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         addr = writer.get_extra_info("peername")
-        logging.info("Client connected: %s", addr)
+        logger.info("Client connected: %s", addr)
         try:
             async with self.db_pool.acquire() as conn:
                 while not reader.at_eof():
@@ -141,14 +180,14 @@ class TcpToDbServer:
                     try:
                         device_id, ts, payload_json = parse_message_line(line)
                     except ValueError as e:
-                        logging.warning("Skipping line from %s: %s", addr, e)
+                        logger.warning("Skipping line from %s: %s", addr, e)
                         continue
 
                     # insert into DB
                     try:
                         await conn.execute(INSERT_SQL, device_id, ts, payload_json, datetime.now(timezone.utc))
                     except Exception:
-                        logging.exception("DB insert failed for %s", addr)
+                        logger.exception("DB insert failed for %s", addr)
 
                     # optional: publish raw to RabbitMQ
                     if self.rabbit_exchange is not None:
@@ -157,26 +196,26 @@ class TcpToDbServer:
                             rk = f"{RABBITMQ_ROUTING_KEY}.{device_id}"
                             await self.rabbit_exchange.publish(message, routing_key=rk)
                         except Exception:
-                            logging.exception("RabbitMQ publish failed")
+                            logger.exception("RabbitMQ publish failed")
 
         except asyncio.IncompleteReadError:
-            logging.info("Client disconnected: %s", addr)
+            logger.info("Client disconnected: %s", addr)
         except Exception:
-            logging.exception("Error handling client %s", addr)
+            logger.exception("Error handling client %s", addr)
         finally:
             try:
                 writer.close()
                 await writer.wait_closed()
             except Exception:
                 pass
-            logging.info("Connection closed: %s", addr)
+            logger.info("Connection closed: %s", addr)
 
     async def run(self):
         await self.init_db()
         await self.init_rabbit()
         server = await asyncio.start_server(self.handle_client, TCP_HOST, TCP_PORT)
         addrs = ", ".join(str(sock.getsockname()) for sock in server.sockets)
-        logging.info("TCP server listening on %s", addrs)
+        logger.info("TCP server listening on %s", addrs)
         async with server:
             try:
                 await server.serve_forever()
@@ -189,5 +228,5 @@ if __name__ == "__main__":
     try:
         asyncio.run(srv.run())
     except KeyboardInterrupt:
-        logging.info("Server stopped by user")
+        logger.info("Server stopped by user")
 

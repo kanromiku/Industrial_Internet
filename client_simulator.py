@@ -4,30 +4,27 @@
 import asyncio
 import json
 import random
-import time
+import configparser
 from datetime import datetime, timezone
 
 # --- Configuration ---
-# Match this with your server's host and port
-SERVER_HOST = "localhost"
-SERVER_PORT = 9000
+config = configparser.ConfigParser()
+config.read('config.ini')
+
+# Server configuration
+SERVER_HOST = config.get('client_simulator', 'server_host', fallback='localhost')
+SERVER_PORT = config.getint('client_simulator', 'server_port', fallback=9000)
 
 # --- Simulation Parameters ---
 # List of device IDs to simulate
-DEVICE_IDS = [
-    "temp-sensor-01",
-    "pressure-sensor-01",
-    "humidity-sensor-A",
-    "vibration-monitor-X",
-    "power-meter-B1"
-]
+DEVICE_IDS = config.get('client_simulator', 'device_ids', fallback='temp-sensor-01').split(',')
 
 # How many devices to run concurrently
-CONCURRENT_DEVICES = 5
+CONCURRENT_DEVICES = config.getint('client_simulator', 'concurrent_devices', fallback=5)
 
 # Min/Max delay between sending messages for a single device (in seconds)
-MIN_SEND_INTERVAL = 2
-MAX_SEND_INTERVAL = 10
+MIN_SEND_INTERVAL = config.getint('client_simulator', 'min_send_interval', fallback=2)
+MAX_SEND_INTERVAL = config.getint('client_simulator', 'max_send_interval', fallback=10)
 
 
 def generate_sensor_data(device_id: str) -> dict:
