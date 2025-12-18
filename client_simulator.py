@@ -40,25 +40,26 @@ def generate_sensor_data(device_id: str) -> dict:
 
     if "temp" in device_id:
         # Temperature in Celsius
-        payload["metrics"]["temperature"] = round(random.uniform(15.0, 35.0), 2)
+        payload["metrics"]["temperature"] = str(round(random.uniform(15.0, 35.0), 2))+"\xB0C"
     elif "pressure" in device_id:
         # Pressure in kPa
-        payload["metrics"]["pressure"] = round(random.uniform(100.0, 105.0), 2)
+        payload["metrics"]["pressure"] = str(round(random.uniform(100.0, 105.0), 2)) + "kPa"
     elif "humidity" in device_id:
         # Humidity in %
-        payload["metrics"]["humidity"] = round(random.uniform(30.0, 60.0), 2)
+        payload["metrics"]["humidity"] = str(round(random.uniform(30.0, 60.0), 2)) + "%"
     elif "vibration" in device_id:
         # Vibration in g
-        payload["metrics"]["vibration_x"] = round(random.uniform(0.01, 0.5), 4)
-        payload["metrics"]["vibration_y"] = round(random.uniform(0.01, 0.5), 4)
-        payload["metrics"]["vibration_z"] = round(random.uniform(0.05, 1.5), 4)
+        payload["metrics"]["vibration_x"] = str(round(random.uniform(0.01, 0.5), 4)) + "g"
+        payload["metrics"]["vibration_y"] = str(round(random.uniform(0.01, 0.5), 4)) + "g"
+        payload["metrics"]["vibration_z"] = str(round(random.uniform(0.05, 1.5), 4)) + "g"
     elif "power" in device_id:
         # Power consumption in kW
-        payload["metrics"]["voltage"] = round(random.uniform(215.0, 225.0), 1)
-        payload["metrics"]["current"] = round(random.uniform(1.0, 15.0), 2)
-        payload["metrics"]["power"] = round(
+        payload["metrics"]["voltage"] = str(round(random.uniform(215.0, 225.0), 1)) + "V"
+        payload["metrics"]["current"] = str(round(random.uniform(1.0, 15.0), 2)) + "A"
+        # Calculate power = voltage * current / 1000 (to convert W to kW)
+        payload["metrics"]["power"] = str(round(
             payload["metrics"]["voltage"] * payload["metrics"]["current"] / 1000, 3
-        )
+        )) + "kW"
     else:
         payload["metrics"]["value"] = round(random.uniform(0, 100), 2)
 
