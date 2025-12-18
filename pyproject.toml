@@ -13,9 +13,10 @@ readme = "README.md"
 requires-python = ">=3.8"
 classifiers = [
     "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
+license =  "MIT"
+license-files = ["LICENSE"]
 dependencies = [
     "psycopg2-binary",
     "pika",
@@ -29,3 +30,5 @@ dependencies = [
 [project.scripts]
 datalink = "cli:cli"
 
+[tool.setuptools]
+py-modules = []
