@@ -1,5 +1,9 @@
-# Async TCP server that receives JSON lines, stores into PostgreSQL, and optionally publishes to RabbitMQ.
-# Configuration via config.ini file.
+# encoding: utf-8
+"""
+This file contains the modified server code.
+- Parses the new data structure from the client.
+- Inserts the data into the `methanol_plant_log` table in PostgreSQL.
+"""
 
 import asyncio
 import json
@@ -12,95 +16,56 @@ import colorlog
 import asyncpg
 try:
     import aio_pika
-except Exception:
+except ImportError:
     aio_pika = None
 
 # -- Logging Setup --
 def get_logger(level=logging.INFO):
-    # 创建logger对象
-    logger = logging.getLogger()
+    """Configures the server logger."""
+    logger = logging.getLogger("server")
+    if logger.hasHandlers():
+        logger.handlers.clear()
     logger.setLevel(level)
-    # 创建控制台日志处理器
     console_handler = logging.StreamHandler()
     console_handler.setLevel(level)
-    # 定义颜色输出格式
     color_formatter = colorlog.ColoredFormatter(
-        '%(log_color)s%(levelname)s: %(message)s',
-        log_colors={
-            'DEBUG': 'cyan',
-            'INFO': 'green',
-            'WARNING': 'yellow',
-            'ERROR': 'red',
-            'CRITICAL': 'red,bg_white',
-        }
+        '%(log_color)s[SERVER] %(levelname)s: %(message)s',
+        log_colors={'DEBUG': 'cyan', 'INFO': 'green', 'WARNING': 'yellow', 'ERROR': 'red', 'CRITICAL': 'red,bg_white'}
     )
-    # 将颜色输出格式添加到控制台日志处理器
     console_handler.setFormatter(color_formatter)
-    # 移除默认的handler
-    for handler in logger.handlers:
-        logger.removeHandler(handler)
-    # 将控制台日志处理器添加到logger对象
     logger.addHandler(console_handler)
+    logger.propagate = False
     return logger
 
-
 logger = get_logger()
-# logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
 # --- Configuration ---
 config = configparser.ConfigParser()
 config.read('config.ini')
 
-# Database configuration
 DB_DSN = config.get('database', 'dsn', fallback='postgresql://postgres:postgres@localhost:5432/postgres')
-
-# TCP Server configuration
 TCP_HOST = config.get('server', 'host', fallback='localhost')
 TCP_PORT = config.getint('server', 'port', fallback=9000)
-
-# RabbitMQ configuration
-RABBITMQ_ENABLED = config.getboolean('rabbitmq', 'enabled', fallback=True)
-RABBITMQ_URL = config.get('rabbitmq', 'url', fallback='amqp://admin:admin@loaclhost:5672/')
+RABBITMQ_ENABLED = config.getboolean('rabbitmq', 'enabled', fallback=False)
+RABBITMQ_URL = config.get('rabbitmq', 'url', fallback='amqp://admin:admin@localhost:5672/')
 RABBITMQ_EXCHANGE = config.get('rabbitmq', 'exchange', fallback='iot_exchange')
 RABBITMQ_ROUTING_KEY = config.get('rabbitmq', 'routing_key', fallback='iot.data')
 
-# SQL for inserting data
-INSERT_SQL = """
-INSERT INTO sensor_data(device_id, ts, payload, received_at)
-VALUES($1, $2, $3::jsonb, $4)
+# --- SQL for inserting into the new table ---
+INSERT_SQL_PLANT_LOG = """
+INSERT INTO methanol_plant_log(
+    record_time, 
+    realtime_power_kw, today_energy_mwh, unit_energy_consumption,
+    operating_rate, oee,
+    workshop_data
+)
+VALUES($1, $2, $3, $4, $5, $6, $7::jsonb)
 """
 
-
-def _parse_iso8601_to_datetime(value: str) -> Optional[datetime]:
-    """Parse common ISO8601 formats. Returns timezone-aware UTC datetime or None."""
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        # ensure tz-aware in UTC
-        if value.tzinfo is None:
-            return value.replace(tzinfo=timezone.utc)
-        return value.astimezone(timezone.utc)
-    try:
-        s = str(value)
-        # handle trailing Z
-        if s.endswith("Z"):
-            # Python fromisoformat doesn't accept Z, convert to +00:00
-            s = s[:-1] + "+00:00"
-        dt = datetime.fromisoformat(s)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        else:
-            dt = dt.astimezone(timezone.utc)
-        return dt
-    except Exception:
-        return None
-
-
-def parse_message_line(line: bytes or str) -> tuple[Optional[str], datetime, str]:
-    """Parse a single line (bytes or str). Expect a JSON object per line.
-
-    Returns (device_id, ts(datetime UTC), payload_json_str).
-    If timestamp missing or invalid, ts is current UTC time.
+def parse_plant_message(line: bytes or str) -> Optional[Dict[str, Any]]:
+    """
+    Parses a line of JSON from the client simulator into a dictionary
+    structured for database insertion.
     """
     if isinstance(line, bytes):
         raw = line.decode("utf-8", errors="ignore")
@@ -108,33 +73,42 @@ def parse_message_line(line: bytes or str) -> tuple[Optional[str], datetime, str
         raw = str(line)
     raw = raw.strip()
     if not raw:
-        raise ValueError("empty line")
-    # try parse JSON
-    obj: Dict[str, Any]
+        return None
+
     try:
         obj = json.loads(raw)
     except json.JSONDecodeError as e:
-        raise ValueError(f"invalid json: {e}")
+        logger.warning(f"Invalid JSON received: {e}")
+        return None
 
-    device_id = obj.get("device_id") or obj.get("dev_id") or "unknown"
-
+    # Extract top-level data
     ts_val = obj.get("timestamp") or obj.get("ts")
-    ts = None
-    if ts_val is not None:
-        # numeric epoch
-        if isinstance(ts_val, (int, float)):
-            try:
-                ts = datetime.fromtimestamp(float(ts_val), tz=timezone.utc)
-            except Exception:
-                ts = None
-        else:
-            ts = _parse_iso8601_to_datetime(ts_val)
-    if ts is None:
-        ts = datetime.now(timezone.utc)
+    if isinstance(ts_val, (int, float)):
+        record_time = datetime.fromtimestamp(float(ts_val), tz=timezone.utc)
+    else:
+        record_time = datetime.now(timezone.utc)
 
-    payload_json = json.dumps(obj, ensure_ascii=False)
+    energy = obj.get("energy_consumption", {})
+    ops = obj.get("operational_status", {})
+    
+    # Prepare workshop_data for JSONB column
+    workshop_data = {
+        "equipment_status": obj.get("equipment_status", {}),
+        "main_workshop": obj.get("main_workshop", {})
+    }
 
-    return device_id, ts, payload_json
+    # Assemble the final dictionary for insertion
+    db_record = {
+        "record_time": record_time,
+        "realtime_power_kw": energy.get("realtime_power_kw"),
+        "today_energy_mwh": energy.get("today_energy_mwh"),
+        "unit_energy_consumption": energy.get("unit_energy_consumption"),
+        "operating_rate": ops.get("operating_rate"),
+        "oee": ops.get("oee"),
+        "workshop_data": json.dumps(workshop_data, ensure_ascii=False)
+    }
+    
+    return db_record
 
 
 class TcpToDbServer:
@@ -155,15 +129,19 @@ class TcpToDbServer:
         if aio_pika is None:
             logger.warning("aio_pika not installed; RabbitMQ disabled")
             return
-        self.rabbit_conn = await aio_pika.connect_robust(RABBITMQ_URL)
-        self.rabbit_channel = await self.rabbit_conn.channel()
-        self.rabbit_exchange = await self.rabbit_channel.declare_exchange(
-            RABBITMQ_EXCHANGE, aio_pika.ExchangeType.TOPIC, durable=True
-        )
-        logger.info("Connected to RabbitMQ: %s", RABBITMQ_URL)
+        try:
+            self.rabbit_conn = await aio_pika.connect_robust(RABBITMQ_URL)
+            self.rabbit_channel = await self.rabbit_conn.channel()
+            self.rabbit_exchange = await self.rabbit_channel.declare_exchange(
+                RABBITMQ_EXCHANGE, aio_pika.ExchangeType.TOPIC, durable=True
+            )
+            logger.info("Connected to RabbitMQ: %s", RABBITMQ_URL)
+        except Exception as e:
+            logger.error(f"Failed to connect to RabbitMQ: {e}")
+
 
     async def close(self):
-        if self.rabbit_conn:
+        if self.rabbit_conn and not self.rabbit_conn.is_closed:
             await self.rabbit_conn.close()
         if self.db_pool:
             await self.db_pool.close()
@@ -172,31 +150,41 @@ class TcpToDbServer:
         addr = writer.get_extra_info("peername")
         logger.info("Client connected: %s", addr)
         try:
-            async with self.db_pool.acquire() as conn:
-                while not reader.at_eof():
-                    line = await reader.readline()
-                    if not line:
-                        break
-                    try:
-                        device_id, ts, payload_json = parse_message_line(line)
-                    except ValueError as e:
-                        logger.warning("Skipping line from %s: %s", addr, e)
-                        continue
+            while not reader.at_eof():
+                line = await reader.readline()
+                if not line:
+                    break
+                
+                db_record = parse_plant_message(line)
+                if not db_record:
+                    continue
 
-                    # insert into DB
+                # Insert into DB
+                try:
+                    async with self.db_pool.acquire() as conn:
+                        await conn.execute(
+                            INSERT_SQL_PLANT_LOG,
+                            db_record["record_time"],
+                            db_record["realtime_power_kw"],
+                            db_record["today_energy_mwh"],
+                            db_record["unit_energy_consumption"],
+                            db_record["operating_rate"],
+                            db_record["oee"],
+                            db_record["workshop_data"]
+                        )
+                        logger.info(f"Successfully inserted data for {db_record['record_time']}")
+                except Exception as e:
+                    logger.exception("DB insert failed for %s: %s", addr, e)
+
+                # Optional: publish raw to RabbitMQ
+                if self.rabbit_exchange is not None:
                     try:
-                        await conn.execute(INSERT_SQL, device_id, ts, payload_json, datetime.now(timezone.utc))
+                        message_body = json.dumps(db_record, default=str).encode("utf-8")
+                        message = aio_pika.Message(body=message_body)
+                        rk = f"{RABBITMQ_ROUTING_KEY}.plant_log"
+                        await self.rabbit_exchange.publish(message, routing_key=rk)
                     except Exception:
-                        logger.exception("DB insert failed for %s", addr)
-
-                    # optional: publish raw to RabbitMQ
-                    if self.rabbit_exchange is not None:
-                        try:
-                            message = aio_pika.Message(body=payload_json.encode("utf-8"))
-                            rk = f"{RABBITMQ_ROUTING_KEY}.{device_id}"
-                            await self.rabbit_exchange.publish(message, routing_key=rk)
-                        except Exception:
-                            logger.exception("RabbitMQ publish failed")
+                        logger.exception("RabbitMQ publish failed")
 
         except asyncio.IncompleteReadError:
             logger.info("Client disconnected: %s", addr)
@@ -222,11 +210,9 @@ class TcpToDbServer:
             finally:
                 await self.close()
 
-
 if __name__ == "__main__":
     srv = TcpToDbServer()
     try:
         asyncio.run(srv.run())
     except KeyboardInterrupt:
         logger.info("Server stopped by user")
-
