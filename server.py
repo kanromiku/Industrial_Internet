@@ -55,7 +55,7 @@ RABBITMQ_ROUTING_KEY = config.get('rabbitmq', 'routing_key', fallback='iot.data'
 INSERT_SQL_PLANT_LOG = """
 INSERT INTO methanol_plant_log(
     record_time, 
-    realtime_power_kw, today_energy_mwh, unit_energy_consumption,
+    realtime_power, today_energy, unit_energy_consumption,
     operating_rate, oee,
     workshop_data
 )
@@ -84,9 +84,9 @@ def parse_plant_message(line: bytes or str) -> Optional[Dict[str, Any]]:
     # Extract top-level data
     ts_val = obj.get("timestamp") or obj.get("ts")
     if isinstance(ts_val, (int, float)):
-        record_time = datetime.fromtimestamp(float(ts_val), tz=timezone.utc)
+        record_time = datetime.fromtimestamp(float(ts_val))
     else:
-        record_time = datetime.now(timezone.utc)
+        record_time = datetime.now().astimezone(timezone.utc.utcoffset(8))
 
     energy = obj.get("energy_consumption", {})
     ops = obj.get("operational_status", {})
@@ -100,8 +100,8 @@ def parse_plant_message(line: bytes or str) -> Optional[Dict[str, Any]]:
     # Assemble the final dictionary for insertion
     db_record = {
         "record_time": record_time,
-        "realtime_power_kw": energy.get("realtime_power_kw"),
-        "today_energy_mwh": energy.get("today_energy_mwh"),
+        "realtime_power": energy.get("realtime_power"),
+        "today_energy": energy.get("today_energy"),
         "unit_energy_consumption": energy.get("unit_energy_consumption"),
         "operating_rate": ops.get("operating_rate"),
         "oee": ops.get("oee"),
@@ -165,8 +165,8 @@ class TcpToDbServer:
                         await conn.execute(
                             INSERT_SQL_PLANT_LOG,
                             db_record["record_time"],
-                            db_record["realtime_power_kw"],
-                            db_record["today_energy_mwh"],
+                            db_record["realtime_power"],
+                            db_record["today_energy"],
                             db_record["unit_energy_consumption"],
                             db_record["operating_rate"],
                             db_record["oee"],
